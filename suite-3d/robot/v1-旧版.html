@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>送药机器人 · 独立演示（开舱 / 出托盘 / 注水 / 递出）</title>
+<style>
+  :root{ --ink:#1b1d20; --ink2:#61686f; --line:rgba(20,22,25,.10); }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:#e8e6e2;color:var(--ink);
+    font-family:"PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif}
+  #app{position:fixed;inset:0}
+  canvas{display:block}
+  .panel{position:fixed;top:18px;left:18px;width:250px;padding:16px;border-radius:14px;
+    background:rgba(252,251,249,.88);backdrop-filter:blur(14px);border:1px solid var(--line);
+    box-shadow:0 18px 40px -24px rgba(20,22,25,.45);user-select:none}
+  .panel h1{margin:0 0 2px;font-size:15px;font-weight:600}
+  .panel .sub{font-size:11px;color:var(--ink2);line-height:1.5;margin-bottom:12px}
+  .cap{font-size:10.5px;letter-spacing:.14em;color:var(--ink2);text-transform:uppercase;margin:12px 0 7px}
+  button{font:inherit;font-size:12px;color:var(--ink);background:#fff;border:1px solid var(--line);
+    border-radius:9px;padding:7px 8px;cursor:pointer;transition:background .18s,border-color .18s}
+  button:hover{background:#f4f1ec}
+  button.on{background:#1d1f22;color:#fbfaf8;border-color:#1d1f22}
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .steps{margin-top:6px}
+  .step{display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 0;color:var(--ink2)}
+  .step i{width:17px;height:17px;border-radius:50%;border:1px solid var(--line);display:inline-flex;
+    align-items:center;justify-content:center;font-size:10px;font-style:normal;background:#fff}
+  .step.act{color:var(--ink);font-weight:600}
+  .step.act i{background:#1d1f22;color:#fff;border-color:#1d1f22}
+  .bar{height:3px;border-radius:2px;background:#dcd7cf;margin-top:10px;overflow:hidden}
+  .bar > span{display:block;height:100%;width:0;background:#8a6a45;transition:width .12s linear}
+  .hint{margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:10.5px;color:var(--ink2);line-height:1.6}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div class="panel">
+  <h1>送药机器人 · 动作演示</h1>
+  <div class="sub">开机自动播放，循环。<br>舱门开启 → 托盘推出 → 注水 → 递出</div>
+  <div class="cap">播放</div>
+  <div class="btns">
+    <button id="play" class="on">暂停</button>
+    <button id="replay">重播</button>
+  </div>
+  <div class="cap">动作序列</div>
+  <div class="steps" id="steps"></div>
+  <div class="bar"><span id="bar"></span></div>
+  <div class="cap">灯光 / 视角</div>
+  <div class="btns">
+    <button id="l1" class="on">棚拍白</button>
+    <button id="l2">暖光</button>
+    <button id="rot">自动旋转</button>
+    <button id="open">手动开舱</button>
+  </div>
+  <div class="hint"><b>左键</b> 旋转 · <b>滚轮</b> 缩放 · <b>右键</b> 平移</div>
+</div>
+
+<script src="vendor/three.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  const T = THREE;
+
+  /* ---------------------------------------------------------------- 渲染器 */
+  const app = document.getElementById('app');
+  const renderer = new T.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = T.PCFSoftShadowMap;
+  renderer.toneMapping = T.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  renderer.outputColorSpace = T.SRGBColorSpace;
+  app.appendChild(renderer.domElement);
+
+  const scene = new T.Scene();
+  const camera = new T.PerspectiveCamera(38, innerWidth / innerHeight, 0.02, 60);
+
+  // 影棚背景（渐变 canvas）
+  (function bg() {
+    const c = document.createElement('canvas'); c.width = 8; c.height = 256;
+    const x = c.getContext('2d'); const g = x.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, '#f2f0ec'); g.addColorStop(.55, '#e3e0db'); g.addColorStop(1, '#cbc7c1');
+    x.fillStyle = g; x.fillRect(0, 0, 8, 256);
+    const t = new T.CanvasTexture(c); t.colorSpace = T.SRGBColorSpace;
+    scene.background = t;
+  })();
+
+  /* ------------------------------------------------------------------ 灯光 */
+  const hemi = new T.HemisphereLight(0xeef3f8, 0xb9a894, 0.85); scene.add(hemi);
+  const key = new T.DirectionalLight(0xfff3e2, 2.5);
+  key.position.set(1.1, 2.4, 1.6); key.castShadow = true;
+  key.shadow.mapSize.set(2048, 2048);
+  const sc = key.shadow.camera; sc.left = -1.2; sc.right = 1.2; sc.top = 1.6; sc.bottom = -0.4; sc.near = .1; sc.far = 8;
+  key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02; key.shadow.radius = 2.4;
+  scene.add(key);
+  const rim = new T.DirectionalLight(0xdce8f5, 0.5); rim.position.set(-1.6, 1.3, -1.4); scene.add(rim);
+  const warm = new T.PointLight(0xffd9a6, 0, 4, 2); warm.position.set(0.4, 1.1, 0.5); scene.add(warm);
+
+  // 地面
+  const floor = new T.Mesh(new T.CircleGeometry(6, 64), new T.MeshStandardMaterial({ color: 0xdedad4, roughness: .95 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+  const shadowCatcher = new T.Mesh(new T.PlaneGeometry(6, 6), new T.ShadowMaterial({ opacity: .22 }));
+  shadowCatcher.rotation.x = -Math.PI / 2; shadowCatcher.position.y = 0.001; shadowCatcher.receiveShadow = true; scene.add(shadowCatcher);
+
+  // 环境反射
+  const pm = new T.PMREMGenerator(renderer);
+  (function env() {
+    const c = document.createElement('canvas'); c.width = 512; c.height = 256;
+    const x = c.getContext('2d'); const g = x.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(.5, '#eae7e1'); g.addColorStop(1, '#9d968c');
+    x.fillStyle = g; x.fillRect(0, 0, 512, 256);
+    const s = x.createRadialGradient(370, 60, 4, 370, 60, 150);
+    s.addColorStop(0, 'rgba(255,246,226,.95)'); s.addColorStop(1, 'rgba(255,246,226,0)');
+    x.fillStyle = s; x.fillRect(0, 0, 512, 256);
+    const t = new T.CanvasTexture(c); t.mapping = T.EquirectangularReflectionMapping; t.colorSpace = T.SRGBColorSpace;
+    scene.environment = pm.fromEquirectangular(t).texture;
+  })();
+
+  /* ------------------------------------------------------------------ 材质 */
+  const M = {
+    shell: new T.MeshStandardMaterial({ color: 0xf7f8f9, roughness: .2, metalness: .04, envMapIntensity: 1.0 }),
+    seam: new T.MeshStandardMaterial({ color: 0xc9ced3, roughness: .42, metalness: .32 }),
+    dark: new T.MeshStandardMaterial({ color: 0x101216, roughness: .12, metalness: .45, envMapIntensity: 1.3 }),
+    cav: new T.MeshStandardMaterial({ color: 0x2a2d31, roughness: .85, side: T.BackSide }),
+    alu: new T.MeshStandardMaterial({ color: 0x9aa1a8, roughness: .38, metalness: .78, envMapIntensity: .9 }),
+    tray: new T.MeshStandardMaterial({ color: 0xdfe3e6, roughness: .42, metalness: .06 }),
+    pill: new T.MeshStandardMaterial({ color: 0xe9e3d6, roughness: .7 }),
+    cup: new T.MeshPhysicalMaterial({ color: 0xe8f2f6, roughness: .08, metalness: 0, transmission: .0, transparent: true, opacity: .34, envMapIntensity: 1.4 }),
+    water: new T.MeshPhysicalMaterial({ color: 0x9fd4ea, roughness: .05, metalness: 0, transparent: true, opacity: .72, envMapIntensity: 1.2 }),
+    led: new T.MeshStandardMaterial({ color: 0x8ad8ff, emissive: 0x54c8ff, emissiveIntensity: 1.6, roughness: .3 })
+  };
+  function box(w, h, d, mat, x, y, z, parent) {
+    const m = new T.Mesh(new T.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true;
+    (parent || scene).add(m); return m;
+  }
+
+  /* ------------------------------------------------------- 机器人本体（蛋形） */
+  const H = 0.66;                       // 总高
+  const bodyR = 0.190, headR = 0.078, headL = 0.135;
+  const robot = new T.Group(); scene.add(robot);
+
+  // 机身：留出中部舱口（用两段旋转体，中间空出 0.30~0.36 的高度带）
+  const prof = [[0.000, 0.040], [0.015, 0.085], [0.050, 0.130], [0.110, 0.170], [0.180, 0.190],
+                [0.260, 0.188], [0.290, 0.181], [0.360, 0.166], [0.375, 0.159], [0.390, 0.140], [0.435, 0.105], [0.465, 0.072],
+                [0.480, 0.055], [0.492, 0.048]];
+  const lower = prof.filter(p => p[0] <= 0.300);
+  const upper = prof.filter(p => p[0] >= 0.360);
+  const bodyLow = new T.Mesh(new T.LatheGeometry(lower.map(p => new T.Vector2(p[1], p[0])), 56), M.shell);
+  bodyLow.castShadow = bodyLow.receiveShadow = true; robot.add(bodyLow);
+  const bodyUp = new T.Mesh(new T.LatheGeometry(upper.map(p => new T.Vector2(p[1], p[0])), 56), M.shell);
+  bodyUp.castShadow = bodyUp.receiveShadow = true; robot.add(bodyUp);
+  // 舱口上下沿的加强环 + 内腔（背面向内，形成"洞")
+  [0.300, 0.360].forEach((y, i) => {
+    const r = i === 0 ? 0.188 : 0.187;
+    const ring = new T.Mesh(new T.TorusGeometry(r, 0.006, 10, 56), M.seam);
+    ring.position.y = y; ring.rotation.x = Math.PI / 2; ring.castShadow = true; robot.add(ring);
+  });
+  const cav = new T.Mesh(new T.CylinderGeometry(0.183, 0.183, 0.058, 40, 1, true), M.cav);
+  cav.position.y = 0.330; robot.add(cav);
+  const cavFloor = new T.Mesh(new T.CircleGeometry(0.183, 40), new T.MeshStandardMaterial({ color: 0x35383c, roughness: .9, side: T.DoubleSide }));
+  cavFloor.rotation.x = -Math.PI / 2; cavFloor.position.y = 0.302; robot.add(cavFloor);
+
+  // 舱门：同半径的一段旋转体，绕机身中轴摆开
+  const doorG = new T.Group(); robot.add(doorG);
+  (function door() {
+    // 门至少要两个轮廓点：单点会让 LatheGeometry 的法线计算访问 undefined.x
+    const doorProf = [[0.300, 0.188], [0.330, 0.1875], [0.360, 0.187]];
+    const g = new T.LatheGeometry(doorProf.map(p => new T.Vector2(p[1], p[0])), 24, Math.PI / 2 - 0.62, 1.24);
+    const m = new T.Mesh(g, M.shell);
+    m.castShadow = m.receiveShadow = true; doorG.add(m);
+    // 门缝描边
+    const edge = new T.LatheGeometry(doorProf.map(p => new T.Vector2(p[1] * 1.004, p[0])), 24, Math.PI / 2 - 0.62, 1.24);
+    const e = new T.Mesh(edge, new T.MeshStandardMaterial({ color: 0xe4e7ea, roughness: .5, side: T.BackSide }));
+    doorG.add(e);
+  })();
+
+  // 颈 + 头（横置胶囊 + 黑屏）
+  const collar = new T.Mesh(new T.TorusGeometry(0.05, 0.007, 10, 40), M.seam);
+  collar.position.y = 0.492; collar.rotation.x = Math.PI / 2; robot.add(collar);
+  const neck = new T.Mesh(new T.CylinderGeometry(0.040, 0.048, 0.052, 28), M.shell);
+  neck.position.y = 0.518; neck.castShadow = true; robot.add(neck);
+  const head = new T.Group(); head.position.set(0, 0.578, -0.006); head.rotation.z = Math.PI / 2; head.rotation.y = -0.2; robot.add(head);
+  const capHead = new T.Mesh(new T.CapsuleGeometry(headR, headL, 10, 30), M.shell);
+  capHead.castShadow = true; head.add(capHead);
+  const screen = new T.Mesh(new T.CapsuleGeometry(headR * .74, headL * .92, 8, 28), M.dark);
+  screen.position.set(0, headR * .42, 0); head.add(screen);
+
+  // 机身底部 + 状态灯
+  const base = new T.Mesh(new T.CylinderGeometry(0.042, 0.042, 0.012, 32), M.seam);
+  base.position.y = 0.006; base.castShadow = true; robot.add(base);
+  const dot = new T.Mesh(new T.SphereGeometry(0.012, 14, 12), M.led);
+  dot.position.set(0, 0.245, bodyR * .985); robot.add(dot);
+
+  /* --------------------------------------------------- 可动部分：托盘 / 水杯 / 水 */
+  const trayG = new T.Group(); robot.add(trayG);            // 托盘（整体前后伸缩）
+  const tray = new T.Mesh(new T.BoxGeometry(0.23, 0.012, 0.17), M.tray);
+  tray.castShadow = tray.receiveShadow = true; trayG.add(tray);
+  const trayRim = new T.Mesh(new T.BoxGeometry(0.235, 0.014, 0.018), M.tray);
+  trayRim.position.set(0, 0.008, 0.082); trayG.add(trayRim);
+  // 七日药盒
+  const pill = new T.Mesh(new T.BoxGeometry(0.14, 0.030, 0.085), M.pill);
+  pill.position.set(-0.040, 0.020, -0.020); pill.castShadow = true; trayG.add(pill);
+  for (let i = 0; i < 4; i++) {
+    const c = new T.Mesh(new T.BoxGeometry(0.028, 0.022, 0.070), M.pill);
+    c.position.set(-0.092 + i * 0.034, 0.045, -0.020); c.castShadow = true; trayG.add(c);
+  }
+  // 水杯（几何原点抬到底部，便于水位缩放）
+  const CUP_R = 0.030, CUP_H = 0.078;
+  const cupGeo = new T.CylinderGeometry(CUP_R, CUP_R * .86, CUP_H, 26, 1, true);
+  cupGeo.translate(0, CUP_H / 2, 0);
+  const cup = new T.Mesh(cupGeo, M.cup);
+  cup.material.side = T.DoubleSide;
+  cup.position.set(0.055, 0.006, 0.030); cup.castShadow = true; trayG.add(cup);
+  const cupBottom = new T.Mesh(new T.CircleGeometry(CUP_R * .86, 26), M.cup);
+  cupBottom.rotation.x = -Math.PI / 2; cupBottom.position.set(0.055, 0.0065, 0.030); trayG.add(cupBottom);
+  const waterGeo = new T.CylinderGeometry(CUP_R * .92, CUP_R * .80, CUP_H * .82, 26);
+  waterGeo.translate(0, CUP_H * .41, 0);
+  const water = new T.Mesh(waterGeo, M.water);
+  water.position.set(0.055, 0.008, 0.030); water.scale.y = 0.001; trayG.add(water);
+  // 注水水流（只在注水阶段可见）
+  const streamGeo = new T.CylinderGeometry(0.0035, 0.0045, 0.14, 12);
+  streamGeo.translate(0, -0.07, 0);
+  const stream = new T.Mesh(streamGeo, new T.MeshStandardMaterial({ color: 0xa9dcf0, roughness: .1, transparent: true, opacity: .8 }));
+  stream.position.set(0.055, 0.20, 0.030); stream.visible = false; trayG.add(stream);
+
+  /* ------------------------------------------------------------------- 时序 */
+  // 0~0.14 开舱 · 0.14~0.30 出托盘 · 0.30~0.58 注水 · 0.58~0.76 递出 · 0.76~0.92 保持 · 0.92~1 复位
+  const STEPS = [
+    { n: '① 舱门开启', a: 0.00, b: 0.14 },
+    { n: '② 托盘推出', a: 0.14, b: 0.30 },
+    { n: '③ 水杯注水', a: 0.30, b: 0.58 },
+    { n: '④ 递给老人', a: 0.58, b: 0.76 },
+    { n: '⑤ 收回复位', a: 0.92, b: 1.00 }
+  ];
+  const DUR = 13.0;                  // 一轮秒数
+  let t = 0, playing = true, manualOpen = false;
+  const ease = k => k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+  const seg = (x, a, b) => Math.max(0, Math.min(1, (x - a) / (b - a)));
+
+  const stepsEl = document.getElementById('steps');
+  STEPS.forEach((s, i) => {
+    const d = document.createElement('div'); d.className = 'step'; d.dataset.i = i;
+    d.innerHTML = '<i></i><span>' + s.n + '</span>';
+    stepsEl.appendChild(d);
+  });
+  const barEl = document.getElementById('bar');
+
+  function update(k) {
+    // ① 舱门
+    const openA = ease(seg(k, STEPS[0].a, STEPS[0].b));
+    const closeA = ease(seg(k, STEPS[4].a, 0.99));
+    let door = openA * 1.15 * (1 - closeA);
+    if (manualOpen) door = 1.15;
+    doorG.rotation.y = -door;
+    // ② 托盘 + ④ 递出 + ⑤ 收回
+    const out = ease(seg(k, STEPS[1].a, STEPS[1].b));
+    const give = ease(seg(k, STEPS[3].a, STEPS[3].b));
+    const back = ease(seg(k, STEPS[4].a, 0.99));
+    const reach = (out + give * 0.45) * (1 - back);
+    trayG.position.set(0, 0.330 + reach * 0.030, reach * 0.225);
+    trayG.rotation.x = give * 0.22 * (1 - back);        // 递出时托盘略前倾
+    // ③ 注水
+    const fill = ease(seg(k, STEPS[2].a, STEPS[2].b));
+    const waterK = Math.max(0.001, fill * (1 - closeA));
+    water.scale.y = waterK;
+    water.visible = waterK > 0.005;
+    stream.visible = fill > 0.02 && fill < 0.995 && give < 0.05;
+    stream.position.y = 0.20 - (1 - fill) * 0.02;
+    // 状态灯呼吸
+    M.led.emissiveIntensity = 1.2 + Math.sin(performance.now() / 320) * 0.5 + give * 1.2;
+    // UI
+    const act = STEPS.findIndex(s => k >= s.a && k < s.b);
+    [].forEach.call(stepsEl.children, (el, i) => el.classList.toggle('act', i === act));
+    barEl.style.width = (k * 100).toFixed(1) + '%';
+  }
+  update(0);
+
+  /* -------------------------------------------------------------- 相机控制 */
+  const cam = { tx: 0, ty: 0.34, tz: 0, r: 1.55, th: 0.62, ph: 1.22, dth: 0.62, dph: 1.22, dr: 1.55, auto: false };
+  let drag = null, lx = 0, ly = 0;
+  const dom = renderer.domElement;
+  dom.addEventListener('contextmenu', e => e.preventDefault());
+  dom.addEventListener('pointerdown', e => { drag = (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit'; lx = e.clientX; ly = e.clientY; dom.setPointerCapture(e.pointerId); });
+  dom.addEventListener('pointerup', e => { drag = null; try { dom.releasePointerCapture(e.pointerId); } catch (x) {} });
+  dom.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
+    if (drag === 'orbit') { cam.dth -= dx * 0.006; cam.dph = Math.max(0.15, Math.min(Math.PI / 2 - .02, cam.dph - dy * 0.005)); }
+    else { cam.tx -= dx * cam.dr * 0.0016; cam.ty = Math.max(0.05, cam.ty + dy * cam.dr * 0.0016); }
+  });
+  dom.addEventListener('wheel', e => { e.preventDefault(); cam.dr = Math.max(0.5, Math.min(6, cam.dr * (1 + Math.sign(e.deltaY) * 0.09))); }, { passive: false });
+
+  /* -------------------------------------------------------------------- UI */
+  const playBtn = document.getElementById('play');
+  playBtn.onclick = () => { playing = !playing; playBtn.textContent = playing ? '暂停' : '播放'; playBtn.classList.toggle('on', playing); };
+  document.getElementById('replay').onclick = () => { t = 0; playing = true; playBtn.textContent = '暂停'; playBtn.classList.add('on'); update(0); };
+  document.getElementById('l1').onclick = function () { l1c(this, true); };
+  document.getElementById('l2').onclick = function () { l1c(this, false); };
+  function l1c(el, studio) {
+    document.getElementById('l1').classList.toggle('on', studio);
+    document.getElementById('l2').classList.toggle('on', !studio);
+    key.color.set(studio ? 0xfff3e2 : 0xffc98a); key.intensity = studio ? 2.5 : 2.2;
+    warm.intensity = studio ? 0 : 1.6; hemi.intensity = studio ? .85 : .55;
+    renderer.toneMappingExposure = studio ? 1.05 : 1.0;
+  }
+  const rotBtn = document.getElementById('rot');
+  rotBtn.onclick = () => { cam.auto = !cam.auto; rotBtn.classList.toggle('on', cam.auto); };
+  document.getElementById('open').onclick = () => { manualOpen = !manualOpen; document.getElementById('open').classList.toggle('on', manualOpen); };
+
+  /* ---------------------------------------------------------------- 主循环 */
+  const clock = new T.Clock();
+  function tick() {
+    const dt = Math.min(clock.getDelta(), 0.05);
+    if (playing) { t += dt; if (t > DUR) t -= DUR; update(t / DUR); }
+    if (cam.auto) cam.dth += dt * 0.25;
+    cam.th += (cam.dth - cam.th) * Math.min(1, dt * 6);
+    cam.ph += (cam.dph - cam.ph) * Math.min(1, dt * 6);
+    cam.r += (cam.dr - cam.r) * Math.min(1, dt * 6);
+    const sp = Math.sin(cam.ph);
+    camera.position.set(cam.tx + cam.r * sp * Math.sin(cam.th), cam.ty + cam.r * Math.cos(cam.ph), cam.tz + cam.r * sp * Math.cos(cam.th));
+    camera.lookAt(cam.tx, cam.ty, cam.tz);
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+  addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+  tick();
+
+  /* ------------------- 给自动化截图用的兼容接口（与套房场景同名，便于复用脚本） */
+  window.SUITE = {
+    views: {
+      '总览': { t: [0, 0.34, 0], r: 1.55, th: 0.62, ph: 1.22 },
+      '平面': { t: [0, 0.30, 0], r: 1.30, th: 0.002, ph: 0.10 },
+      '起居': { t: [0, 0.30, 0], r: 1.05, th: 1.35, ph: 1.30 },
+      '鸟瞰': { t: [0, 0.28, 0], r: 1.45, th: 2.30, ph: 0.85 },
+      '餐区': { t: [0, 0.30, 0], r: 1.20, th: -0.60, ph: 1.25 },
+      '卧室 A': { t: [0, 0.30, 0], r: 1.20, th: 0.30, ph: 1.25 },
+      '卧室 B': { t: [0, 0.30, 0], r: 1.20, th: 2.80, ph: 1.25 },
+      '卧室 C': { t: [0, 0.30, 0], r: 1.20, th: 3.60, ph: 1.25 },
+      '书房': { t: [0, 0.30, 0], r: 1.20, th: 4.40, ph: 1.25 }
+    },
+    flyTo: function (v) {
+      if (v.r) { cam.dr = v.r; cam.dth = v.th; cam.dph = v.ph; }
+      if (v.t) { cam.tx = v.t[0]; cam.ty = v.t[1]; cam.tz = v.t[2]; }
+    },
+    lights: { '日光': function () { l1c(document.getElementById('l1'), true); }, '黄昏': function () { l1c(document.getElementById('l1'), false); }, '夜晚': function () { l1c(document.getElementById('l1'), false); } },
+    state: { labels: true, furniture: true, cut: 2.85, mode: 'rebuild' },
+    applyState: function () {}, cut: function () {}, mode: function () { return 'rebuild'; },
+    modelInfo: function () { return null; }, spinSofa: function () {}, togglePerson: function () {},
+    toggleRobot: function (v) { robot.visible = (v === undefined) ? !robot.visible : !!v; return robot.visible; },
+    seek: function (k) { t = Math.max(0, Math.min(0.999, k)) * DUR; playing = false; playBtn.textContent = '播放'; playBtn.classList.remove('on'); update(t / DUR); },
+    play: function () { playing = true; playBtn.textContent = '暂停'; playBtn.classList.add('on'); },
+    robot: robot, scene: scene, camera: camera, renderer: renderer
+  };
+})();
+</script>
+</body>
+</html>
