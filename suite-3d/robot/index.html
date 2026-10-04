@@ -297,19 +297,30 @@
     ccEl.textContent = text; ccEl.classList.add('on');
     clearTimeout(ccTimer); ccTimer = setTimeout(() => ccEl.classList.remove('on'), ms || 5200);
   }
-  let curAudio = null;
+  let curAudio = null; const voiceQ = [];
   function speak(key, text){
     cc(text);
     if(!voiceOn) return;
+    if(speaking){ voiceQ.push([key, text]); return; }   // 正在播 → 排队，绝不打断
+    playVoice(key, text);
+  }
+  function playVoice(key, text){
     speaking = true;
-    const done = () => { speaking = false; };
+    let guard = null;
+    const done = () => {
+      if(!speaking) return;                              // 防止 onended 与保险各触发一次
+      clearTimeout(guard); speaking = false;
+      if(voiceQ.length){ const nx = voiceQ.shift(); playVoice(nx[0], nx[1]); }
+    };
     try{
-      if(curAudio) { curAudio.pause(); curAudio = null; }
       const a = new Audio('voice/' + key + '.mp3');
       curAudio = a;
-      a.onended = done; a.onerror = () => { curAudio = null; tts(text, done); };
-      const guard = setTimeout(done, 15000);
-      a.onended = () => { clearTimeout(guard); done(); };
+      a.onloadedmetadata = () => {
+        if(isFinite(a.duration) && a.duration > 0){ clearTimeout(guard); guard = setTimeout(done, a.duration * 1000 + 2500); }
+      };
+      a.onended = done;
+      a.onerror = () => { curAudio = null; tts(text, done); };
+      guard = setTimeout(done, 25000);                   // 兜底：25 秒（比最长那句 9 秒宽裕得多）
       a.play().catch(() => { curAudio = null; tts(text, done); });
     }catch(e){ speaking = false; tts(text, done); }
   }
@@ -341,7 +352,7 @@
   }
   function showToast(){ toastEl.classList.add('on'); setTimeout(() => toastEl.classList.remove('on'), 5200); }
   function resetSpeech(){
-    said = {}; takenAt = 0; chimeDone = false; speaking = false;
+    said = {}; takenAt = 0; chimeDone = false; speaking = false; voiceQ.length = 0;
     clearTimeout(ccTimer); ccEl.classList.remove('on'); toastEl.classList.remove('on');
     if(curAudio){ try{ curAudio.pause(); }catch(e){} curAudio = null; }
     if('speechSynthesis' in window) try{ speechSynthesis.cancel(); }catch(e){}
@@ -399,7 +410,7 @@
     if (taken) {
       if (!takenAt) takenAt = performance.now();
       say('p2', '奶奶真棒，药都吃完啦！');
-      if (performance.now() - takenAt > 2800){
+      if (performance.now() - takenAt > 2800 && !speaking && voiceQ.length === 0){
         say('p3', '吃药的记录，我已经发到您家人的手机上啦。他们随时都能看到，您放心。');
         if (!chimeDone){ chimeDone = true; chime(); showToast(); }
       }
