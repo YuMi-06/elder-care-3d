@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>蛋形送药机器人 · 对开门 / 出托盘 / 注水 / 取药后眼睛转绿</title>
+<style>
+  :root{--ink:#1b1d20;--ink2:#61686f;--line:rgba(20,22,25,.10);--red:#e0483c;--green:#2fae74}
+  *{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;background:#e8e6e2;color:var(--ink);
+    font-family:"PingFang SC","Microsoft YaHei",Arial,sans-serif}
+  #app{position:fixed;inset:0}canvas{display:block}
+  .panel{position:fixed;top:18px;left:18px;width:252px;padding:16px;border-radius:14px;background:rgba(252,251,249,.9);
+    backdrop-filter:blur(14px);border:1px solid var(--line);box-shadow:0 18px 40px -24px rgba(20,22,25,.45);user-select:none}
+  .panel h1{margin:0 0 2px;font-size:15px;font-weight:600}
+  .sub{font-size:11px;color:var(--ink2);line-height:1.5;margin-bottom:10px}
+  .cap{font-size:10.5px;letter-spacing:.14em;color:var(--ink2);text-transform:uppercase;margin:12px 0 7px}
+  button{font:inherit;font-size:12px;color:var(--ink);background:#fff;border:1px solid var(--line);border-radius:9px;padding:7px 8px;cursor:pointer}
+  button.on{background:#1d1f22;color:#fbfaf8;border-color:#1d1f22}
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .step{display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 0;color:var(--ink2)}
+  .step i{width:17px;height:17px;border-radius:50%;border:1px solid var(--line);display:inline-flex;align-items:center;
+    justify-content:center;font-size:10px;font-style:normal;background:#fff;flex:0 0 auto}
+  .step.act{color:var(--ink);font-weight:600}.step.act i{background:#1d1f22;color:#fff;border-color:#1d1f22}
+  .step.done i{background:#2fae74;border-color:#2fae74;color:#fff}
+  .bar{height:3px;border-radius:2px;background:#dcd7cf;margin-top:8px;overflow:hidden}
+  .bar>span{display:block;height:100%;width:0;background:#8a6a45}
+  .eye{display:flex;align-items:center;gap:8px;font-size:12px;margin-top:10px}
+  .eye b{width:11px;height:11px;border-radius:50%;background:var(--red);box-shadow:0 0 8px var(--red);transition:.5s}
+  .eye.g b{background:var(--green);box-shadow:0 0 10px var(--green)}
+  .hint{margin-top:11px;padding-top:10px;border-top:1px solid var(--line);font-size:10.5px;color:var(--ink2);line-height:1.6}
+  #cc{position:fixed;left:50%;bottom:34px;transform:translateX(-50%);max-width:74vw;padding:12px 22px;
+    border-radius:999px;background:rgba(20,22,25,.86);color:#f7f6f4;font-size:15px;line-height:1.5;
+    opacity:0;transition:opacity .4s;pointer-events:none;text-align:center;box-shadow:0 12px 30px -16px rgba(0,0,0,.6)}
+  #cc.on{opacity:1}
+  #toast{position:fixed;right:26px;top:26px;padding:11px 18px;border-radius:12px;background:#2fae74;color:#fff;
+    font-size:13px;box-shadow:0 14px 30px -18px rgba(0,0,0,.5);opacity:0;transform:translateY(-8px);transition:.45s;pointer-events:none}
+  #toast.on{opacity:1;transform:translateY(0)}
+  #voice{grid-column:span 2}
+</style></head>
+<body>
+<div id="app"></div>
+<div class="panel">
+  <h1>蛋形送药机器人</h1>
+  <div class="sub">前下方<b>对开门</b>开启 → 托盘带<b>水杯与药品</b>送出 → 舱内注水 → 老人取药 → <b>眼睛红转绿</b></div>
+  <div class="cap">播放</div><div class="btns"><button id="play" class="on">暂停</button><button id="replay">重播</button></div>
+  <div class="cap">动作序列</div><div id="steps"></div><div class="bar"><span id="bar"></span></div>
+  <div class="eye" id="eyeRow"><b></b><span id="eyeTxt">眼睛：红灯（待服药）</span></div>
+  <div class="cap">交互 / 视角</div>
+  <div class="btns"><button id="take">模拟取药</button><button id="rot">自动旋转</button>
+    <button id="l1" class="on">棚拍白</button><button id="l2">暖光</button>
+    <button id="voice" class="on">🔊 语音 开</button></div>
+  <div class="hint"><b>左键</b> 旋转 · <b>滚轮</b> 缩放 · <b>右键</b> 平移</div>
+</div>
+<div id="cc"></div><div id="toast">✓ 喝药记录已上传至子女手机</div>
+<script src="vendor/three.min.js"></script>
+<script>
+(function(){
+  'use strict';
+  const T=THREE;
+  const app=document.getElementById('app');
+  const renderer=new T.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+  renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFSoftShadowMap;
+  renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;
+  renderer.outputColorSpace=T.SRGBColorSpace;app.appendChild(renderer.domElement);
+  const scene=new T.Scene();const camera=new T.PerspectiveCamera(38,innerWidth/innerHeight,0.02,60);
+  (function(){const c=document.createElement('canvas');c.width=8;c.height=256;const x=c.getContext('2d');
+    const g=x.createLinearGradient(0,0,0,256);g.addColorStop(0,'#f2f0ec');g.addColorStop(.55,'#e3e0db');g.addColorStop(1,'#cbc7c1');
+    x.fillStyle=g;x.fillRect(0,0,8,256);const t=new T.CanvasTexture(c);t.colorSpace=T.SRGBColorSpace;scene.background=t;})();
+  const hemi=new T.HemisphereLight(0xeef3f8,0xb9a894,0.9);scene.add(hemi);
+  const key=new T.DirectionalLight(0xfff3e2,2.4);key.position.set(1.1,2.4,1.6);key.castShadow=true;
+  key.shadow.mapSize.set(2048,2048);const sc=key.shadow.camera;sc.left=-1.2;sc.right=1.2;sc.top=1.6;sc.bottom=-.4;sc.near=.1;sc.far=8;
+  key.shadow.bias=-0.0004;key.shadow.normalBias=0.02;key.shadow.radius=2.4;scene.add(key);
+  const rim=new T.DirectionalLight(0xdce8f5,0.5);rim.position.set(-1.6,1.3,-1.4);scene.add(rim);
+  const warm=new T.PointLight(0xffd9a6,0,4,2);warm.position.set(.4,1.1,.5);scene.add(warm);
+  const inner=new T.PointLight(0xcfe9ff,0,0.8,2);inner.position.set(0,.24,.08);scene.add(inner);
+  const floor=new T.Mesh(new T.CircleGeometry(6,64),new T.MeshStandardMaterial({color:0xdedad4,roughness:.95}));
+  floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;scene.add(floor);
+  const catcher=new T.Mesh(new T.PlaneGeometry(6,6),new T.ShadowMaterial({opacity:.22}));
+  catcher.rotation.x=-Math.PI/2;catcher.position.y=.001;catcher.receiveShadow=true;scene.add(catcher);
+  const pm=new T.PMREMGenerator(renderer);
+  (function(){const c=document.createElement('canvas');c.width=512;c.height=256;const x=c.getContext('2d');
+    const g=x.createLinearGradient(0,0,0,256);g.addColorStop(0,'#fff');g.addColorStop(.5,'#eae7e1');g.addColorStop(1,'#9d968c');
+    x.fillStyle=g;x.fillRect(0,0,512,256);const s=x.createRadialGradient(370,60,4,370,60,150);s.addColorStop(0,'rgba(255,246,226,.95)');
+    s.addColorStop(1,'rgba(255,246,226,0)');x.fillStyle=s;x.fillRect(0,0,512,256);
+    const t=new T.CanvasTexture(c);t.mapping=T.EquirectangularReflectionMapping;t.colorSpace=T.SRGBColorSpace;
+    scene.environment=pm.fromEquirectangular(t).texture;})();
+  const M={
+    shell:new T.MeshStandardMaterial({color:0xf7f8f9,roughness:.22,metalness:.04,envMapIntensity:1}),
+    shell2:new T.MeshStandardMaterial({color:0xe9ebee,roughness:.38,metalness:.05}),
+    cav:new T.MeshStandardMaterial({color:0x3a3d42,roughness:.8,side:T.DoubleSide}),
+    dark:new T.MeshStandardMaterial({color:0x101216,roughness:.12,metalness:.45,envMapIntensity:1.3}),
+    alu:new T.MeshStandardMaterial({color:0xa8aeb4,roughness:.34,metalness:.8}),
+    tray:new T.MeshStandardMaterial({color:0xe4e8eb,roughness:.4}),
+    pill:new T.MeshStandardMaterial({color:0xefe6d4,roughness:.68}),
+    cup:new T.MeshPhysicalMaterial({color:0xeaf4f8,roughness:.06,transparent:true,opacity:.3,envMapIntensity:1.5,side:T.DoubleSide}),
+    water:new T.MeshPhysicalMaterial({color:0x9fd0e8,roughness:.04,transparent:true,opacity:.72,envMapIntensity:1.2}),
+    skin:new T.MeshStandardMaterial({color:0xe8c6a8,roughness:.8}),
+    sleeve:new T.MeshStandardMaterial({color:0x9c9188,roughness:.95}),
+    eye:new T.MeshStandardMaterial({color:0xff5a4d,emissive:0xff2d1f,emissiveIntensity:2,roughness:.3})
+  };
+  const R=0.190;                       // 机身最宽半径
+  const DOOR={y0:0.170,y1:0.300,az:0.42};   // 前下方对开门的范围（高度带 + 单侧张角）
+  const FY=0;   // 关键：LatheGeometry 的 phi=0 即正面(+Z)，不是 π/2                  // 正面方位角
+  const robot=new T.Group();scene.add(robot);
+  const put=(g,m,x,y,z,par)=>{const o=new T.Mesh(g,m);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;(par||robot).add(o);return o;};
+  // —— 蛋形机身（轮廓旋转体），前下方留出门洞
+  const prof=[[0.000,0.042],[0.015,0.085],[0.045,0.130],[0.105,0.170],[0.175,0.190],[0.230,0.190],
+              [0.270,0.188],[0.320,0.185],[0.380,0.176],[0.430,0.155],[0.465,0.115],[0.487,0.072],[0.500,0.046]];
+  const V=a=>a.map(p=>new T.Vector2(p[1],p[0]));
+  const bd=[[DOOR.y0,0.1952],[0.235,0.1950],[DOOR.y1,0.1912]];
+  const bodyMesh=new T.Mesh(new T.LatheGeometry(V(prof),72),M.shell);
+  bodyMesh.castShadow=bodyMesh.receiveShadow=true;robot.add(bodyMesh);
+  // 门洞内壁 + 底板（暗色，形成储物空间）
+  // —— 隐藏储物腔：正对着对开门的方块暗腔（与托盘出口同一处，不再用圆筒）
+  const nicheW = 2 * 0.1948 * Math.sin(DOOR.az / 2) * 0.94;
+  const wall = new T.Mesh(new T.BoxGeometry(nicheW, DOOR.y1 - DOOR.y0 - 0.004, 0.010), M.cav);
+  wall.position.set(0, (DOOR.y0 + DOOR.y1) / 2, 0.190);
+  wall.receiveShadow = true; robot.add(wall);
+  const cavFloor = new T.Mesh(new T.BoxGeometry(nicheW, 0.006, 0.052), M.shell2);
+  cavFloor.position.set(0, DOOR.y0 + 0.004, 0.176); cavFloor.receiveShadow = true; robot.add(cavFloor);
+  put(new T.BoxGeometry(0.052,0.008,0.150),M.alu,0,DOOR.y0+0.008,0.100);       // 舱内导轨
+  put(new T.BoxGeometry(0.110,0.008,0.060),M.shell2,0,DOOR.y0+0.086,0.140);   // 隔板
+  [[-0.075,0.075,0.055],[0.010,0.062,0.050],[0.080,0.070,0.048]].forEach(q=>  // 隔板上的药
+    put(new T.BoxGeometry(q[2],q[1],0.055),M.pill,q[0],DOOR.y0+0.095+q[1]/2,-0.070));
+  put(new T.CylinderGeometry(0.026,0.026,0.100,20),M.pill,0.075,DOOR.y0+0.095+0.05,-0.070);
+  // —— 对开门：左右各一扇，绕各自外侧竖边向外摆（贴弧面，不留缝、不悬空）
+  function makeLeaf(sign){
+    const az0 = sign < 0 ? FY - DOOR.az : FY;                 // 左扇 [FY-az, FY]，右扇 [FY, FY+az]
+    const hingeAz = sign < 0 ? FY - DOOR.az : FY + DOOR.az;   // 铰链在外侧竖边
+    const HR = 0.1948;
+    const hx = Math.sin(hingeAz) * HR, hz = Math.cos(hingeAz) * HR;
+    const g = new T.Group(); g.position.set(hx, 0, hz); robot.add(g);
+    const geo = new T.LatheGeometry(V(bd), 22, az0, DOOR.az);
+    geo.translate(-hx, 0, -hz);
+    const m = new T.Mesh(geo, M.shell); m.castShadow = m.receiveShadow = true; g.add(m);
+    const ge = new T.LatheGeometry(V(bd.map(q => [q[0], q[1] - 0.0035])), 22, az0, DOOR.az);
+    ge.translate(-hx, 0, -hz);
+    g.add(new T.Mesh(ge, new T.MeshStandardMaterial({ color: 0xeceef0, roughness: .5, side: T.BackSide })));
+    // 中缝细线：让"对开"一眼可辨
+    const sa = FY + sign * 0.010, sx = Math.sin(sa) * 0.1966, sz = Math.cos(sa) * 0.1966;
+    const seam = new T.Mesh(new T.BoxGeometry(0.0035, DOOR.y1 - DOOR.y0 - 0.006, 0.005), M.shell2);
+    seam.position.set(sx - hx, (DOOR.y0 + DOOR.y1) / 2, sz - hz);
+    seam.rotation.y = -sa + Math.PI / 2;
+    g.add(seam);
+    // 圆形把手（靠中缝、贴门面）
+    const ha = FY + sign * 0.090, px = Math.sin(ha) * 0.1995, pz = Math.cos(ha) * 0.1995;
+    const hd = new T.Mesh(new T.CylinderGeometry(0.0085, 0.0085, 0.013, 16), M.alu);
+    hd.position.set(px - hx, (DOOR.y0 + DOOR.y1) / 2, pz - hz);
+    hd.rotation.x = Math.PI / 2; hd.castShadow = true; g.add(hd);
+    // 上下铰链活页（贴在铰链竖线上，说明门是连在机身上的）
+    [DOOR.y0 + 0.014, DOOR.y1 - 0.014].forEach(hy => {
+      const kn = new T.Mesh(new T.CylinderGeometry(0.0055, 0.0055, 0.018, 12), M.alu);
+      kn.position.set(0, hy, 0); kn.castShadow = true; g.add(kn);
+    });
+    return g;
+  }
+  const doorL = makeLeaf(-1), doorR = makeLeaf(1);
+  // —— 头部：横向圆角矩形屏幕（医疗终端感），沿用原来的颈部与机身自然衔接
+  put(new T.CylinderGeometry(0.044,0.052,0.042,28),M.shell,0,0.513,0);
+  const HEAD={w:0.310,h:0.170,d:0.060,r:0.042};
+  function rbox(w,h,d,r,mat,x,y,z,par){
+    const sh=new T.Shape(),x0=-w/2,y0=-h/2;
+    sh.moveTo(x0+r,y0);sh.lineTo(x0+w-r,y0);sh.quadraticCurveTo(x0+w,y0,x0+w,y0+r);
+    sh.lineTo(x0+w,y0+h-r);sh.quadraticCurveTo(x0+w,y0+h,x0+w-r,y0+h);
+    sh.lineTo(x0+r,y0+h);sh.quadraticCurveTo(x0,y0+h,x0,y0+h-r);
+    sh.lineTo(x0,y0+r);sh.quadraticCurveTo(x0,y0,x0+r,y0);
+    const g=new T.ExtrudeGeometry(sh,{depth:d,bevelEnabled:true,bevelSize:0.007,bevelThickness:0.007,bevelSegments:3,curveSegments:12});
+    g.translate(0,0,-d/2);
+    const m=new T.Mesh(g,mat);m.position.set(x,y,z);m.castShadow=m.receiveShadow=true;(par||robot).add(m);return m;
+  }
+  const HY=0.590;
+  rbox(HEAD.w,HEAD.h,HEAD.d,HEAD.r,M.shell,0,HY,0.010);
+  // 屏幕用画布贴图（交互界面 + 表情），微微上仰
+  const scrCv=document.createElement('canvas');scrCv.width=512;scrCv.height=288;
+  const sc2=scrCv.getContext('2d');
+  const scrTex=new T.CanvasTexture(scrCv);scrTex.colorSpace=T.SRGBColorSpace;
+  const scr=new T.Mesh(new T.PlaneGeometry(HEAD.w-0.032,HEAD.h-0.032),
+    new T.MeshBasicMaterial({map:scrTex,toneMapped:false,transparent:true}));
+  scr.position.set(0,HY,0.056);robot.add(scr);
+  function drawScreen(g){
+    const W=512,H=288,x=sc2,col=g>0.5?'#39e08f':'#7fd4ff';
+    const gr=x.createLinearGradient(0,0,0,H);gr.addColorStop(0,'#141c25');gr.addColorStop(1,'#070a0d');
+    x.fillStyle=gr;x.fillRect(0,0,W,H);
+    x.shadowColor=col;x.shadowBlur=26;x.strokeStyle=col;x.fillStyle=col;
+    [-1,1].forEach(sg=>{const ex=W/2+sg*76,ey=104;
+      if(g>0.5){x.beginPath();x.lineWidth=13;x.arc(ex,ey+6,26,Math.PI*1.12,Math.PI*1.88);x.stroke();}
+      else{x.beginPath();x.ellipse(ex,ey,25,29,0,0,Math.PI*2);x.fill();}});
+    x.beginPath();x.lineWidth=11;
+    if(g>0.5){x.arc(W/2,166,40,Math.PI*.20,Math.PI*.80);}else{x.moveTo(W/2-32,176);x.lineTo(W/2+32,176);}x.stroke();
+    x.shadowBlur=0;x.fillStyle='rgba(255,255,255,.10)';x.fillRect(22,H-62,W-44,38);
+    x.fillStyle=col;x.font='600 25px "PingFang SC","Microsoft YaHei",sans-serif';x.textAlign='center';
+    x.fillText(g>0.5?'已服药 · 祝您健康':'请取药 · 药已备好',W/2,H-34);
+    scrTex.needsUpdate=true;
+  }
+  drawScreen(0);
+  // —— 托盘组（含伸缩导轨：尾端始终留在舱内 → 不脱节）
+  const trayG=new T.Group();robot.add(trayG);
+  const trayY=(DOOR.y0+DOOR.y1)/2-0.004;
+  put(new T.BoxGeometry(0.200,0.012,0.140),M.tray,0,0,0.045,trayG);
+  put(new T.BoxGeometry(0.205,0.014,0.012),M.tray,0,0.008,0.112,trayG);
+  put(new T.BoxGeometry(0.046,0.010,0.240),M.alu,0,-0.010,-0.020,trayG);
+  put(new T.BoxGeometry(0.030,0.008,0.260),M.shell2,0,-0.018,-0.040,trayG);
+  const CR=0.026,CH=0.068;
+  const cg=new T.CylinderGeometry(CR,CR*.88,CH,26,1,true);cg.translate(0,CH/2,0);
+  const cup=put(cg,M.cup,0.030,0.007,0.052,trayG);
+  put(new T.CircleGeometry(CR*.88,26),M.cup,0.030,0.0075,0.052,trayG).rotation.x=-Math.PI/2;
+  const wg=new T.CylinderGeometry(CR*.93,CR*.82,CH*.80,26);wg.translate(0,CH*.40,0);
+  const water=put(wg,M.water,0.030,0.009,0.052,trayG);water.scale.y=0.001;
+  // 独立包装药品（铝塑小袋，两排三列，摆齐）
+  const foil=new T.MeshStandardMaterial({color:0xd2d8dd,roughness:.22,metalness:.55});
+  for(let r=0;r<2;r++)for(let i=0;i<3;i++){
+    const px=-0.034+i*0.034, pz=0.016+r*0.048;
+    put(new T.BoxGeometry(0.028,0.006,0.040),M.pill,px,0.010,pz,trayG);
+    put(new T.BoxGeometry(0.030,0.003,0.042),foil,px,0.0145,pz,trayG);
+  }
+  // 小药盒（圆盒，掀盖半开）
+  const pb=new T.Group();pb.position.set(-0.034,0.007,0.086);trayG.add(pb);
+  put(new T.CylinderGeometry(0.033,0.033,0.024,22),M.pill,0,0.012,0,pb);
+  for(let i=0;i<6;i++){const a=i/6*Math.PI*2;put(new T.CylinderGeometry(0.006,0.006,0.004,10),M.pill,Math.cos(a)*0.016,0.028,Math.sin(a)*0.016,pb);}
+  put(new T.CylinderGeometry(0.035,0.035,0.006,22),M.pill,0.030,0.040,0.018,pb).rotation.set(-.85,0,-.45);
+  // 少量医疗用品：两片酒精棉 + 一小卷纱布
+  const pad=new T.MeshStandardMaterial({color:0xf3f6f8,roughness:.75});
+  put(new T.BoxGeometry(0.024,0.004,0.024),pad,-0.020,0.010,0.110,trayG);
+  put(new T.BoxGeometry(0.024,0.004,0.024),pad,0.006,0.010,0.106,trayG);
+  const gauze=put(new T.CylinderGeometry(0.014,0.014,0.026,18),pad,0.040,0.021,0.100,trayG);
+  gauze.rotation.z=Math.PI/2;
+  // —— 注水：一道细水流，落在空杯正上方（无注水器）
+  const sg = new T.CylinderGeometry(0.0030,0.0042,0.080,10); sg.translate(0,-0.040,0);
+  const stream = new T.Mesh(sg, new T.MeshPhysicalMaterial({color:0xbfe3f2,roughness:.05,transparent:true,opacity:.85}));
+  stream.position.set(0.030, trayY+0.118, 0.272); stream.visible = false; robot.add(stream);
+  // —— 老人的手
+  const handG=new T.Group();robot.add(handG);handG.visible=false;
+  (function(){put(new T.BoxGeometry(0.080,0.028,0.090),M.skin,0,0,0,handG);
+    for(let i=0;i<4;i++){const f=put(new T.CapsuleGeometry(0.008,0.042,6,10),M.skin,-0.028+i*0.019,0.002,-0.058,handG);f.rotation.x=Math.PI/2;}
+    const th=put(new T.CapsuleGeometry(0.010,0.036,6,10),M.skin,-0.046,-0.004,-0.016,handG);th.rotation.z=Math.PI/2.4;
+    const w=put(new T.CylinderGeometry(0.034,0.040,0.16,16),M.sleeve,0,-0.004,0.108,handG);w.rotation.x=Math.PI/2;})();
+  // —— 底部四个轮子：左右两个驱动轮 + 前方两个万向轮，各带支架（都连在机身上）
+  const wheelMat = new T.MeshStandardMaterial({ color: 0x24262a, roughness: .85 });
+  const wheels = []; let lastRoll = 0;
+  function addWheel(x, z, r, w, caster){
+    const g = new T.Group(); g.position.set(x, r, z); robot.add(g);
+    const spin = new T.Group(); g.add(spin);
+    const tire = new T.Mesh(new T.CylinderGeometry(r, r, w, 24), wheelMat);
+    tire.rotation.z = Math.PI/2; tire.castShadow = true; tire.receiveShadow = true; spin.add(tire);
+    const hub = new T.Mesh(new T.CylinderGeometry(r*0.42, r*0.42, w+0.006, 16), M.alu);
+    hub.rotation.z = Math.PI/2; spin.add(hub);
+    for (const sgn of [-1,1]) {
+      const disc = new T.Mesh(new T.CylinderGeometry(r*0.40, r*0.40, 0.004, 14), M.shell2);
+      disc.rotation.z = Math.PI/2; disc.position.x = sgn*(w/2+0.004); spin.add(disc);
+    }
+    const fork = new T.Mesh(new T.BoxGeometry(0.018, r+0.030, 0.022), M.alu);
+    fork.position.set(0, r*0.5+0.015, 0); fork.castShadow = true; g.add(fork);
+    if (caster) {
+      const cp = new T.Mesh(new T.CylinderGeometry(0.009,0.009,0.030,12), M.alu);
+      cp.position.set(0, r*0.5+0.008, 0); cp.castShadow = true; g.add(cp);
+    }
+    g.userData.spin = spin; wheels.push(g); return g;
+  }
+  addWheel(-0.126, -0.016, 0.032, 0.028, false);   // 左驱动轮
+  addWheel( 0.126, -0.016, 0.032, 0.028, false);   // 右驱动轮
+  addWheel(-0.090,  0.100, 0.024, 0.022, true);    // 左前万向轮
+  addWheel( 0.090,  0.100, 0.024, 0.022, true);    // 右前万向轮
+
+  // —— 时序
+  const STEPS=[
+    {n:'① 对开门开启',a:0.00,b:0.11},
+    {n:'② 托盘推出（空杯）',a:0.11,b:0.26},
+    {n:'③ 给空杯注水',a:0.26,b:0.42},
+    {n:'④ 递给老人',a:0.42,b:0.58},
+    {n:'⑤ 老人取药',a:0.58,b:0.76},
+    {n:'⑥ 先收托盘·再关门',a:0.90,b:1.00}];
+
+  /* ---------------- 语音播报 + 字幕 + 提示音 ---------------- */
+  const ccEl = document.getElementById('cc'), toastEl = document.getElementById('toast');
+  let ccTimer = null, voiceOn = true, said = {}, takenAt = 0, chimeDone = false, speaking = false;
+  let zhVoice = null;
+  const VOICE_PRIORITY = [
+    /yaoyao|瑶瑶|童|child|kid/i,                                // 系统里的童声
+    /kangkang|康康|yunxi|云希|yunyang|云扬|male|男/i,            // 男声 → 抬高音调即男童（孙子）
+    /xiaoxiao|xiaoyi|晓晓|晓伊|female|女/i,
+    /zh[-_]CN|Chinese|普通话|中文/i
+  ];
+  function pickVoice(){
+    if(!('speechSynthesis' in window)) return;
+    const vs = (speechSynthesis.getVoices() || []).filter(v => /zh|Chinese/i.test(v.lang + ' ' + v.name));
+    if(!vs.length) return;
+    for(const re of VOICE_PRIORITY){
+      const hit = vs.find(v => re.test(v.name));
+      if(hit){ zhVoice = hit; break; }
+    }
+    zhVoice = zhVoice || vs[0];
+    const el = document.querySelector('.hint');
+    if(el && zhVoice && !el.dataset.v){ el.dataset.v = '1'; el.insertAdjacentHTML('beforeend', '<br>音色：' + zhVoice.name); }
+  }
+  if('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+  function cc(text, ms){
+    ccEl.textContent = text; ccEl.classList.add('on');
+    clearTimeout(ccTimer); ccTimer = setTimeout(() => ccEl.classList.remove('on'), ms || 5200);
+  }
+  let curAudio = null;
+  function speak(key, text){
+    cc(text);
+    if(!voiceOn) return;
+    speaking = true;
+    const done = () => { speaking = false; };
+    try{
+      if(curAudio) { curAudio.pause(); curAudio = null; }
+      const a = new Audio('voice/' + key + '.mp3');
+      curAudio = a;
+      a.onended = done; a.onerror = () => { curAudio = null; tts(text, done); };
+      const guard = setTimeout(done, 15000);
+      a.onended = () => { clearTimeout(guard); done(); };
+      a.play().catch(() => { curAudio = null; tts(text, done); });
+    }catch(e){ speaking = false; tts(text, done); }
+  }
+  function tts(text, done){
+    if(!('speechSynthesis' in window)) return done && done();
+    try{
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang='zh-CN'; u.rate=1.0; u.pitch=1.70; u.volume=1; if(zhVoice) u.voice=zhVoice;
+      u.onend = () => done && done(); u.onerror = () => done && done();
+      speechSynthesis.speak(u);
+    }catch(e){ done && done(); }
+  }
+  function say(key, text){ if(said[key]) return; said[key] = true; speak(key, text); }
+  let AC = null;
+  function chime(){
+    try{
+      AC = AC || new (window.AudioContext || window.webkitAudioContext)();
+      const t0 = AC.currentTime;
+      [[880, 0], [1174.7, 0.16], [1568, 0.32]].forEach(([f, d]) => {
+        const o = AC.createOscillator(), g = AC.createGain();
+        o.type = 'sine'; o.frequency.value = f;
+        g.gain.setValueAtTime(0, t0 + d);
+        g.gain.linearRampToValueAtTime(0.18, t0 + d + 0.03);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + d + 0.5);
+        o.connect(g); g.connect(AC.destination); o.start(t0 + d); o.stop(t0 + d + 0.55);
+      });
+    }catch(e){}
+  }
+  function showToast(){ toastEl.classList.add('on'); setTimeout(() => toastEl.classList.remove('on'), 5200); }
+  function resetSpeech(){
+    said = {}; takenAt = 0; chimeDone = false; speaking = false;
+    clearTimeout(ccTimer); ccEl.classList.remove('on'); toastEl.classList.remove('on');
+    if(curAudio){ try{ curAudio.pause(); }catch(e){} curAudio = null; }
+    if('speechSynthesis' in window) try{ speechSynthesis.cancel(); }catch(e){}
+  }
+  document.addEventListener('pointerdown', function once(){
+    document.removeEventListener('pointerdown', once);
+    if('speechSynthesis' in window) try{ speechSynthesis.resume(); }catch(e){}
+    if(!AC){ try{ AC = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){} }
+  }, { once: true });
+  const voiceBtn = document.getElementById('voice');
+  voiceBtn.onclick = () => {
+    voiceOn = !voiceOn;
+    voiceBtn.classList.toggle('on', voiceOn);
+    voiceBtn.textContent = voiceOn ? '🔊 语音 开' : '🔇 语音 关';
+    if(!voiceOn && 'speechSynthesis' in window) try{ speechSynthesis.cancel(); }catch(e){}
+  };
+
+  const DUR=18.0;let t=17.5*0.24,playing=true,taken=false,forceTake=false;
+  const ease=k=>k<.5?4*k*k*k:1-Math.pow(-2*k+2,3)/2;
+  const seg=(x,a,b)=>Math.max(0,Math.min(1,(x-a)/(b-a)));
+  const lerp=(a,b,k)=>a+(b-a)*k;
+  const stepsEl=document.getElementById('steps'),barEl=document.getElementById('bar'),
+        eyeRow=document.getElementById('eyeRow'),eyeTxt=document.getElementById('eyeTxt');
+  STEPS.forEach(s=>{const d=document.createElement('div');d.className='step';d.innerHTML='<i></i><span>'+s.n+'</span>';stepsEl.appendChild(d);});
+  function update(k){
+    const open=ease(seg(k,STEPS[0].a,STEPS[0].b)), close=ease(seg(k,STEPS[5].a,0.995));
+    const trayBack=Math.min(1,close*1.60);           // 先收托盘
+    const doorClose=Math.max(0,(close-0.62)/0.38); // 托盘收完再关门
+    const sw=open*(Math.PI/2)*(1-doorClose);   // 门敞开到 90°
+    doorL.rotation.y=-sw; doorR.rotation.y=sw;
+    const out=ease(seg(k,STEPS[1].a,STEPS[1].b)), give=ease(seg(k,STEPS[3].a,STEPS[3].b)), back=ease(seg(k,STEPS[5].a,0.995));
+    const reach=(out*0.190+give*0.050)*(1-trayBack);
+    trayG.position.set(0,trayY,0.030+reach);
+    // 行驶：出托盘时向前挪一点，收尾退回；轮子按位移同步转动
+    const roll = (out*0.100 + give*0.030) * (1-trayBack);
+    robot.position.z = roll;
+    const dRoll = roll - lastRoll; lastRoll = roll;
+    wheels.forEach(w => { w.userData.spin.rotation.x -= dRoll / 0.030; });
+    const fill=ease(seg(k,STEPS[2].a,STEPS[2].b));
+    const pouring=fill>0.02&&fill<0.99&&give<0.05;
+    stream.visible=pouring;
+    const wk=Math.max(0.001,fill*(1-close));water.scale.y=wk;water.visible=wk>0.006;
+    const inHand=ease(seg(k,STEPS[4].a+0.20,STEPS[4].b-0.06)), away=ease(seg(k,STEPS[4].a+0.40,STEPS[4].b));
+    handG.visible=inHand>0.01&&away<0.995;
+    handG.position.set(0.052-inHand*0.012, trayY+0.050+inHand*0.050-away*0.02, reach+0.20-inHand*0.115-away*0.05);
+    handG.rotation.y=lerp(0.38,0.05,inHand);
+    const lift=inHand*(1-away)*0.042;
+    cup.position.y=0.007+lift;water.position.y=0.009+lift;
+    const green=forceTake?1:(k>STEPS[4].b-0.03?ease(Math.min(1,(k-(STEPS[4].b-0.03))/0.07)):0);
+    taken=green>0.5;
+    if(typeof drawScreen==='function') drawScreen(green);
+    eyeRow.classList.toggle('g',taken);
+    // 语音：④ 递出托盘时提醒服药；⑤ 服完后鼓励并播报记录已上传
+    if (k >= STEPS[3].a - 0.03) say('p1', '奶奶，该吃药啦。我先给您倒好温水，您把这三粒药吃下去，好不好？');
+    if (taken) {
+      if (!takenAt) takenAt = performance.now();
+      say('p2', '奶奶真棒，药都吃完啦！');
+      if (performance.now() - takenAt > 2800){
+        say('p3', '吃药的记录，我已经发到您家人的手机上啦。他们随时都能看到，您放心。');
+        if (!chimeDone){ chimeDone = true; chime(); showToast(); }
+      }
+    }
+    eyeTxt.textContent=taken?'眼睛：绿灯（已服下药）':'眼睛：红灯（待服药）';
+    inner.intensity=open*(1-close)*1.7+(taken?.25:0);
+    const act=STEPS.findIndex(s=>k>=s.a&&k<s.b);
+    [].forEach.call(stepsEl.children,(el,i)=>{el.classList.toggle('act',i===act);el.classList.toggle('done',taken&&i<=4);});
+    barEl.style.width=(k*100).toFixed(1)+'%';
+  }
+  update(0);
+  const cam={tx:0,ty:0.34,tz:0.02,r:1.35,th:0.62,ph:1.26,dth:0.62,dph:1.26,dr:1.35,auto:false};
+  let drag=null,lx=0,ly=0;const dom=renderer.domElement;
+  dom.addEventListener('contextmenu',e=>e.preventDefault());
+  dom.addEventListener('pointerdown',e=>{drag=(e.button===2||e.shiftKey)?'pan':'orbit';lx=e.clientX;ly=e.clientY;dom.setPointerCapture(e.pointerId);});
+  dom.addEventListener('pointerup',e=>{drag=null;try{dom.releasePointerCapture(e.pointerId);}catch(x){}});
+  dom.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-lx,dy=e.clientY-ly;lx=e.clientX;ly=e.clientY;
+    if(drag==='orbit'){cam.dth-=dx*.006;cam.dph=Math.max(.2,Math.min(Math.PI/2-.02,cam.dph-dy*.005));}
+    else{cam.tx-=dx*cam.dr*.0016;cam.ty=Math.max(.05,cam.ty+dy*cam.dr*.0016);}});
+  dom.addEventListener('wheel',e=>{e.preventDefault();cam.dr=Math.max(.5,Math.min(6,cam.dr*(1+Math.sign(e.deltaY)*.09)));},{passive:false});
+  const playBtn=document.getElementById('play');
+  playBtn.onclick=()=>{playing=!playing;playBtn.textContent=playing?'暂停':'播放';playBtn.classList.toggle('on',playing);};
+  document.getElementById('replay').onclick=()=>{t=0;forceTake=false;resetSpeech();playing=true;playBtn.textContent='暂停';playBtn.classList.add('on');update(0);};
+  const takeBtn=document.getElementById('take');
+  takeBtn.onclick=()=>{forceTake=!forceTake;takeBtn.classList.toggle('on',forceTake);update(t/DUR);};
+  function lights(w){document.getElementById('l1').classList.toggle('on',w);document.getElementById('l2').classList.toggle('on',!w);
+    key.color.set(w?0xfff3e2:0xffc98a);key.intensity=w?2.4:2.1;warm.intensity=w?0:1.6;hemi.intensity=w?.9:.55;
+    renderer.toneMappingExposure=w?1.05:1;}
+  document.getElementById('l1').onclick=()=>lights(true);document.getElementById('l2').onclick=()=>lights(false);
+  const rotBtn=document.getElementById('rot');rotBtn.onclick=()=>{cam.auto=!cam.auto;rotBtn.classList.toggle('on',cam.auto);};
+  const clock=new T.Clock();
+  function tick(){const dt=Math.min(clock.getDelta(),.05);
+    if(playing&&!speaking){t+=dt;if(t>DUR&&!speaking){t-=DUR;forceTake=false;resetSpeech();}update(t/DUR);}else if(speaking){update(t/DUR);}
+    if(cam.auto)cam.dth+=dt*.25;
+    cam.th+=(cam.dth-cam.th)*Math.min(1,dt*6);cam.ph+=(cam.dph-cam.ph)*Math.min(1,dt*6);cam.r+=(cam.dr-cam.r)*Math.min(1,dt*6);
+    const sp=Math.sin(cam.ph);
+    camera.position.set(cam.tx+cam.r*sp*Math.sin(cam.th),cam.ty+cam.r*Math.cos(cam.ph),cam.tz+cam.r*sp*Math.cos(cam.th));
+    camera.lookAt(cam.tx,cam.ty,cam.tz);renderer.render(scene,camera);requestAnimationFrame(tick);}
+  addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+  tick();
+  window.SUITE={views:{'总览':{t:[0,.34,.02],r:1.35,th:.62,ph:1.26},'平面':{t:[0,.30,.02],r:1.25,th:.002,ph:.10},
+    '起居':{t:[0,.30,.06],r:.95,th:1.15,ph:1.32},'鸟瞰':{t:[0,.28,.02],r:1.25,th:2.30,ph:.80},
+    '餐区':{t:[0,.32,.06],r:1.05,th:-.55,ph:1.25},'卧室 A':{t:[0,.32,.06],r:.85,th:.30,ph:1.30},
+    '卧室 B':{t:[0,.32,.06],r:.85,th:2.80,ph:1.30},'卧室 C':{t:[0,.32,.06],r:.85,th:3.60,ph:1.30},
+    '书房':{t:[0,.32,.06],r:.85,th:4.40,ph:1.30}},
+    flyTo:function(v){if(v.r){cam.dr=v.r;cam.dth=v.th;cam.dph=v.ph;}if(v.t){cam.tx=v.t[0];cam.ty=v.t[1];cam.tz=v.t[2];}},
+    lights:{'日光':()=>lights(true),'黄昏':()=>lights(false),'夜晚':()=>lights(false)},
+    state:{},applyState:()=>{},cut:()=>{},mode:()=>'rebuild',modelInfo:()=>null,spinSofa:()=>{},togglePerson:()=>{},toggleRobot:()=>{},
+    take:function(v){forceTake=(v===undefined)?true:!!v;takeBtn.classList.toggle('on',forceTake);update(t/DUR);return forceTake;},
+    eyes:()=>taken?'green':'red',
+    seek:function(k){t=Math.max(0,Math.min(.995,k))*DUR;playing=false;playBtn.textContent='播放';playBtn.classList.remove('on');
+      update(t/DUR);return{t:+t.toFixed(2),eyes:taken?'green':'red',trayZ:+trayG.position.z.toFixed(3)};},
+    play:function(){playing=true;playBtn.textContent='暂停';playBtn.classList.add('on');},
+    robot:robot,scene:scene,camera:camera,renderer:renderer};
+})();
+</script></body></html>
